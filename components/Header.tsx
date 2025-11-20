@@ -28,7 +28,7 @@ const Header: React.FC<HeaderProps> = ({ onNavigate, user, onLoginRequest, onLog
                 {user ? (
                     <div className="flex items-center gap-4">
                         <span className="hidden sm:inline text-white/90">
-                            {user.email?.split('@')[0]}님 안녕하세요
+                            {user.email?.split('@')[0]}님
                         </span>
                         <button 
                             onClick={onLogoutRequest}
@@ -39,8 +39,8 @@ const Header: React.FC<HeaderProps> = ({ onNavigate, user, onLoginRequest, onLog
                     </div>
                 ) : (
                     <div className="flex items-center gap-4">
-                        <button onClick={onLoginRequest} className="hover:text-orange-100 transition-colors flex items-center gap-1">
-                             <i className="fab fa-google"></i> 로그인
+                        <button onClick={onLoginRequest} className="hover:text-orange-100 transition-colors flex items-center gap-2 bg-white/10 px-3 py-1.5 rounded-full hover:bg-white/20">
+                             <i className="fas fa-envelope"></i> 이메일 로그인
                         </button>
                         <div className="h-3 w-px bg-white/40"></div>
                         <button onClick={onLoginRequest} className="hover:text-orange-100 transition-colors">회원가입</button>

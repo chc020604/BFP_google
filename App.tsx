@@ -1,3 +1,4 @@
+
 import React, { useState, useEffect, useCallback, useMemo } from 'react';
 import Header from './components/Header';
 import CategoryTabs from './components/CategoryTabs';
@@ -7,8 +8,9 @@ import EventDetail from './components/EventDetail';
 import GlobalMapView from './components/GlobalMapView';
 import TicketPage from './components/TicketPage';
 import MySchedule from './components/MySchedule';
+import AuthModal from './components/AuthModal';
 import { EventCategory, DateSelection, CultureEvent } from './types';
-import { fetchEventsFromGemini } from './services/geminiService';
+import { fetchBusanFestivals } from './services/apiService';
 import { supabase } from './services/supabaseClient';
 import { User } from '@supabase/supabase-js';
 
@@ -32,35 +34,29 @@ const App: React.FC = () => {
   const [view, setView] = useState<ViewState>('list');
   const [selectedEvent, setSelectedEvent] = useState<CultureEvent | null>(null);
   
-  // Cache structure: year-month-category -> events[]
-  const [cache, setCache] = useState<Record<string, CultureEvent[]>>({});
-
   // User & Saved Events State
   const [user, setUser] = useState<User | null>(null);
   const [savedEvents, setSavedEvents] = useState<CultureEvent[]>([]);
+  const [isAuthModalOpen, setIsAuthModalOpen] = useState(false);
 
-  // 1. Initialize Auth & Load Initial Data
+  // 1. Initialize Auth
   useEffect(() => {
-    // Check active session
-    supabase.auth.getSession().then(({ data: { session } }) => {
-      setUser(session?.user ?? null);
-    });
+    const initAuth = async () => {
+        const { data: { session } } = await supabase.auth.getSession();
+        setUser(session?.user ?? null);
 
-    // Listen for auth changes
-    const {
-      data: { subscription },
-    } = supabase.auth.onAuthStateChange((_event, session) => {
-      setUser(session?.user ?? null);
-    });
-
-    return () => subscription.unsubscribe();
+        const { data: { subscription } } = supabase.auth.onAuthStateChange((_event, session) => {
+            setUser(session?.user ?? null);
+        });
+        return () => subscription.unsubscribe();
+    };
+    initAuth();
   }, []);
 
-  // 2. Load Saved Events (Strategy: DB if logged in, LocalStorage if guest)
+  // 2. Load Saved Events
   useEffect(() => {
     const loadSavedEvents = async () => {
       if (user) {
-        // Fetch from Supabase
         const { data, error } = await supabase
           .from('user_schedules')
           .select('event_data')
@@ -69,16 +65,13 @@ const App: React.FC = () => {
         if (error) {
           console.error('Error fetching schedules:', error);
         } else if (data) {
-          // Extract event_data from rows
           setSavedEvents(data.map((row: any) => row.event_data));
         }
       } else {
-        // Fetch from LocalStorage (Guest mode)
         try {
           const saved = localStorage.getItem('bfp_saved_events');
           setSavedEvents(saved ? JSON.parse(saved) : []);
         } catch (e) {
-          console.error("Failed to parse saved events", e);
           setSavedEvents([]);
         }
       }
@@ -87,11 +80,25 @@ const App: React.FC = () => {
     loadSavedEvents();
   }, [user]);
 
-  // 3. Handle Save/Remove Logic
+  // 3. Load Real Data from API
+  useEffect(() => {
+    const loadData = async () => {
+        setLoading(true);
+        try {
+            const apiEvents = await fetchBusanFestivals();
+            setEvents(apiEvents);
+        } catch (err) {
+            console.error("Data load failed", err);
+        } finally {
+            setLoading(false);
+        }
+    };
+    
+    loadData();
+  }, []); 
+
   const handleToggleSave = async (event: CultureEvent) => {
     const isAlreadySaved = savedEvents.some(e => e.id === event.id);
-
-    // Optimistic UI update
     let newSavedEvents = isAlreadySaved 
       ? savedEvents.filter(e => e.id !== event.id)
       : [...savedEvents, event];
@@ -99,69 +106,26 @@ const App: React.FC = () => {
     setSavedEvents(newSavedEvents);
 
     if (user) {
-      // Supabase Sync
       if (isAlreadySaved) {
-        // Delete: Since we store JSON, we need to find the row where event_data->>id matches
-        // However, Supabase JSON filtering can be tricky. 
-        // Alternative: Delete based on user_id and a filter on the JSON column.
-        // Note: This query assumes event_data->>'id' works.
         const { error } = await supabase
           .from('user_schedules')
           .delete()
           .eq('user_id', user.id)
-          .eq('event_data->>id', event.id); // Cast ID to string comparison
-        
+          .eq('event_data->>id', event.id);
         if (error) console.error("Delete error:", error);
-
       } else {
-        // Insert
         const { error } = await supabase
           .from('user_schedules')
-          .insert({
-            user_id: user.id,
-            event_data: event
-          });
-
+          .insert({ user_id: user.id, event_data: event });
         if (error) console.error("Insert error:", error);
       }
     } else {
-      // LocalStorage Sync
       localStorage.setItem('bfp_saved_events', JSON.stringify(newSavedEvents));
     }
   };
 
   const savedEventIds = useMemo(() => new Set(savedEvents.map(e => e.id)), [savedEvents]);
 
-  // Fetch events when month or category changes
-  const loadEvents = useCallback(async () => {
-    const { year, month } = dateSelection;
-    const cacheKey = `${year}-${month}-${activeCategory}`;
-
-    // Check cache first
-    if (cache[cacheKey]) {
-      setEvents(cache[cacheKey]);
-      return;
-    }
-
-    setLoading(true);
-    try {
-      const fetchedEvents = await fetchEventsFromGemini(year, month, activeCategory);
-      setEvents(fetchedEvents);
-      setCache(prev => ({ ...prev, [cacheKey]: fetchedEvents }));
-    } catch (error) {
-      console.error("Error loading events:", error);
-      setEvents([]);
-    } finally {
-      setLoading(false);
-    }
-  }, [dateSelection.year, dateSelection.month, activeCategory, cache]);
-
-  // Trigger fetch on relevant state changes
-  useEffect(() => {
-    loadEvents();
-  }, [loadEvents]);
-
-  // Navigation Handlers
   const handleEventClick = (event: CultureEvent) => {
     setSelectedEvent(event);
     setView('detail');
@@ -178,12 +142,12 @@ const App: React.FC = () => {
       window.scrollTo(0, 0);
   };
 
-  // Calculate which days have events for the calendar dots
   const activeDays = useMemo(() => {
     const days = new Set<number>();
     events.forEach(event => {
       const start = new Date(event.dateStart);
       const end = new Date(event.dateEnd);
+      
       const daysInMonth = new Date(dateSelection.year, dateSelection.month + 1, 0).getDate();
       
       for(let d = 1; d <= daysInMonth; d++) {
@@ -200,7 +164,6 @@ const App: React.FC = () => {
     return days;
   }, [events, dateSelection.year, dateSelection.month]);
 
-  // Filter displayed events based on selected day AND search query
   const displayedEvents = events.filter(event => {
     const start = new Date(event.dateStart);
     const end = new Date(event.dateEnd);
@@ -227,22 +190,19 @@ const App: React.FC = () => {
       <Header 
         onNavigate={handleNavigate} 
         user={user} 
-        onLoginRequest={() => supabase.auth.signInWithOAuth({ provider: 'google' })}
+        onLoginRequest={() => setIsAuthModalOpen(true)}
         onLogoutRequest={() => supabase.auth.signOut()}
       />
       
       <main className="flex-grow w-full">
         {view === 'list' && (
             <>
-                {/* Filters & Calendar (Only in List View) */}
                 <div className="bg-white/80 backdrop-blur-md shadow-sm pt-4 pb-2 sticky top-0 z-30 border-b border-slate-100">
                     <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 flex flex-col md:flex-row items-center justify-between gap-4 mb-4">
                         <CategoryTabs 
                             activeCategory={activeCategory} 
                             onSelectCategory={setActiveCategory} 
                         />
-                        
-                        {/* Search Bar */}
                         <div className="relative w-full md:w-72">
                             <input 
                                 type="text" 
@@ -256,7 +216,6 @@ const App: React.FC = () => {
                             </svg>
                         </div>
                     </div>
-                    
                     <DateSelector 
                         selection={dateSelection} 
                         onDateChange={setDateSelection} 
@@ -264,7 +223,6 @@ const App: React.FC = () => {
                     />
                 </div>
 
-                {/* Event Grid */}
                 <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 mt-8 mb-20">
                     <div className="flex items-center justify-between mb-6 pb-2 border-b border-slate-200">
                         <h3 className="text-xl md:text-2xl font-bold text-slate-800 flex items-center">
@@ -276,7 +234,6 @@ const App: React.FC = () => {
                             <span className="text-rose-500 font-bold text-lg">{displayedEvents.length}</span>건
                         </span>
                     </div>
-                    
                     <EventGrid 
                         events={displayedEvents} 
                         loading={loading} 
@@ -316,12 +273,7 @@ const App: React.FC = () => {
 
       <footer className="bg-gradient-to-r from-indigo-950 via-purple-900 to-indigo-950 text-white/60 py-12 mt-auto animate-gradient-slow">
         <div className="max-w-7xl mx-auto px-4 text-center">
-          <h2 
-            onClick={() => handleNavigate('list')}
-            className="text-2xl font-black text-white mb-4 font-[Noto Sans KR] tracking-widest opacity-80 cursor-pointer inline-block"
-          >
-            BFP
-          </h2>
+          <h2 onClick={() => handleNavigate('list')} className="text-2xl font-black text-white mb-4 font-[Noto Sans KR] tracking-widest opacity-80 cursor-pointer inline-block">BFP</h2>
           <p className="text-sm mb-6 text-white/70">Busan Festival Planner</p>
           <div className="flex justify-center space-x-6 mb-6 text-xs md:text-sm">
             <a href="#" className="hover:text-rose-400 transition-colors">서비스 소개</a>
@@ -332,6 +284,7 @@ const App: React.FC = () => {
           <p className="text-[10px] opacity-50">&copy; 2025 BFP. All rights reserved.</p>
         </div>
       </footer>
+      <AuthModal isOpen={isAuthModalOpen} onClose={() => setIsAuthModalOpen(false)} />
     </div>
   );
 };

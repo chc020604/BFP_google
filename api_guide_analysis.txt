@@ -1,0 +1,59 @@
+
+[BFP 프로젝트를 위한 한국관광공사 TourAPI (국문 관광정보 서비스) 분석 명세서]
+
+1. 기본 서비스 정보
+- 서비스명: 국문 관광정보 서비스 (KorService1)
+- 활용 신청 API 키: b8d739cbc545016d0ed2ef1cae6fa233afe0aa3115cfde4629e646a935502669
+- 기본 요청 URL (Base URL): https://apis.data.go.kr/B551011/KorService1
+- 응답 형식: JSON (_type=json 파라미터 필수)
+
+2. 사용할 주요 오퍼레이션 (기능)
+- 오퍼레이션명: searchFestival1 (행사정보조회)
+- 기능 설명: 날짜별로 행사/공연/축제 정보를 조회하는 기능입니다.
+
+3. 요청 파라미터 (Request Parameter) 설정 가이드
+BFP 서비스(Web) 환경에 맞춰 설정해야 할 필수 및 옵션 값입니다.
+
+(1) 공통 필수 파라미터
+- serviceKey: (위의 API 키 사용) ※ 주의: URL 인코딩 문제 발생 시 Decoding된 키 사용 필요할 수 있음
+- MobileOS: ETC (웹 환경이므로 'ETC'로 설정)
+- MobileApp: BFP (서비스명)
+- _type: json (JSON 응답을 받기 위해 설정)
+- numOfRows: 100 (한 번에 가져올 데이터 수, 넉넉하게 설정)
+- pageNo: 1 (페이지 번호)
+
+(2) 행사 조회 전용 파라미터 (searchFestival1)
+- eventStartDate: [동적 생성 필요] (YYYYMMDD 형식)
+  * 요구사항: 저번 달부터 향후 10개월까지 조회
+  * 예: 현재가 2024년 5월이라면, '20240401'로 설정하여 이후 데이터를 모두 검색
+- areaCode: 6 (부산광역시 코드)
+- sigunguCode: (선택) 부산 전체를 보려면 생략
+- arrange: A (제목순), C (수정일순), D (생성일순) 중 선택 (보통 최신순인 D 또는 제목순 A 권장)
+- listYN: Y (목록 출력 여부)
+
+4. 응답 데이터 (Response Element) 매핑 전략
+API에서 들어오는 값 -> BFP 앱 데이터 구조 매핑
+
+- contentid (콘텐츠ID) -> id (고유 식별자)
+- title (제목) -> title
+- addr1 (주소) -> location (장소 표시용)
+- mapx (경도), mapy (위도) -> coordinates { lat, lng } (지도 마커 및 교통정보 조회용 핵심 데이터)
+- firstimage (대표이미지), firstimage2 (썸네일) -> imageUrl
+- eventstartdate (시작일), eventenddate (종료일) -> dateStart, dateEnd (YYYY-MM-DD 포맷팅 필요)
+- tel (전화번호) -> 상세 페이지 문의처 표기 가능
+
+5. 연계 API 활용 전략 (Connect-Connect 전략)
+이 API에서 1차적으로 부산의 축제 목록을 확보한 후,
+확보된 각 행사의 'mapx(경도)', 'mapy(위도)' 좌표를 사용하여 다음 API들을 연쇄 호출합니다.
+
+(1) 주차장/교통/날씨 API 연결
+- Input: 위에서 얻은 mapx, mapy 좌표
+- Logic: 해당 좌표 반경 1km~1.5km 내의 데이터를 조회
+- Target APIs:
+  - 카카오/공공데이터 주차장 API
+  - 버스 정류소 조회 API
+  - 기상청 단기예보 API (행사 날짜/장소 기준)
+
+6. 주의사항 (Troubleshooting)
+- 서비스 키 에러(SERVICE_KEY_IS_NOT_REGISTERED_ERROR): 인코딩 된 키와 디코딩 된 키를 번갈아 테스트 필요. (보통 브라우저/JS fetch에서는 인코딩 문제로 실패하는 경우가 많으므로 주의)
+- CORS 에러: 공공데이터포털은 브라우저 직접 호출 시 CORS 에러가 발생하므로 Proxy 서버나 백엔드(Supabase Functions)를 경유해야 함.
